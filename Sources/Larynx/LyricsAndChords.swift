@@ -125,15 +125,16 @@ public final class LyricsAndChordsEngine: @unchecked Sendable {
     }
 
     private func fetchSearchFallback(track: Track, cacheURL: URL) {
-        let query = "\(track.artist) \(track.title)".addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
-        guard let url = URL(string: "https://lrclib.net/api/search?q=\(query)") else {
+        let cleanArtist = (track.artist == "YouTube Music" || track.artist == "Unknown" || track.artist.isEmpty) ? "" : track.artist
+        let queryTerm = cleanArtist.isEmpty ? track.title : "\(cleanArtist) \(track.title)"
+        guard let query = queryTerm.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
+              let url = URL(string: "https://lrclib.net/api/search?q=\(query)") else {
             DispatchQueue.main.async {
                 self.status = .notFound
                 self.onLinesUpdated?([], .notFound)
             }
             return
         }
-
         var req = URLRequest(url: url)
         req.setValue("Larynx/1.0", forHTTPHeaderField: "User-Agent")
 
@@ -349,7 +350,8 @@ public final class LyricsAndChordsEngine: @unchecked Sendable {
             return
         }
 
-        let currentPos = track.elapsedTime
+        // Real-time wall-clock tracking: base elapsed + time since update
+        let currentPos = track.elapsedTime + Date().timeIntervalSince(track.lastUpdated)
         var matchedIndex: Int?
 
         for (i, line) in lines.enumerated() {

@@ -38,7 +38,7 @@ public final class PlaybackEngine: @unchecked Sendable {
     private var pollTimer: Timer?
     private let queue = DispatchQueue(label: "com.larynx.playback", qos: .userInitiated)
     private var lastPolledSource: String?
-
+    private var oembedCache: [String: (title: String, artist: String)] = [:]
     // Supported Chromium & WebKit bundle identifiers
     private let targetBrowsers: [(bundleId: String, appName: String, isSafari: Bool)] = [
         ("company.thebrowser.dia", "Dia", false),
@@ -139,14 +139,49 @@ public final class PlaybackEngine: @unchecked Sendable {
 
         let parts = stringValue.components(separatedBy: "|||")
         guard let rawTitle = parts.first, !rawTitle.isEmpty else { return nil }
+        let urlStr = parts.count > 1 ? parts[1] : ""
 
+        // Clean common YouTube suffixes
         let cleaned = rawTitle
+            .replacingOccurrences(of: " | YouTube Music", with: "")
             .replacingOccurrences(of: " - YouTube Music", with: "")
+            .replacingOccurrences(of: " | YouTube", with: "")
             .replacingOccurrences(of: " - YouTube", with: "")
-        let subParts = cleaned.components(separatedBy: " - ")
+            .replacingOccurrences(of: " • YouTube Music", with: "")
+            .replacingOccurrences(of: " • YouTube", with: "")
+            .trimmingCharacters(in: .whitespaces)
 
-        let title = subParts[0].trimmingCharacters(in: .whitespaces)
-        let artist = subParts.count > 1 ? subParts[1].trimmingCharacters(in: .whitespaces) : "YouTube Music"
+        var title = cleaned
+        var artist = ""
+
+        if cleaned.contains(" - ") {
+            let sub = cleaned.components(separatedBy: " - ")
+            title = sub[0].trimmingCharacters(in: .whitespaces)
+            artist = sub[1].trimmingCharacters(in: .whitespaces)
+        } else if cleaned.contains(" | ") {
+            let sub = cleaned.components(separatedBy: " | ")
+            title = sub[0].trimmingCharacters(in: .whitespaces)
+            artist = sub.count > 1 ? sub[1].trimmingCharacters(in: .whitespaces) : ""
+        }
+
+        // If artist is empty and we have a YouTube watch URL, resolve via fast oEmbed
+        if artist.isEmpty && (urlStr.contains("youtube.com/watch") || urlStr.contains("youtu.be/")) {
+            let videoKey = urlStr.components(separatedBy: "&list=").first ?? urlStr
+            if let cached = oembedCache[videoKey] {
+                title = cached.title
+                artist = cached.artist
+            } else if let oembedUrl = URL(string: "https://www.youtube.com/oembed?url=\(videoKey.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "")&format=json"),
+                      let data = try? Data(contentsOf: oembedUrl),
+                      let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                let resolvedTitle = json["title"] as? String ?? title
+                var resolvedAuthor = json["author_name"] as? String ?? ""
+                resolvedAuthor = resolvedAuthor.replacingOccurrences(of: " - Topic", with: "").trimmingCharacters(in: .whitespaces)
+                oembedCache[videoKey] = (resolvedTitle, resolvedAuthor)
+                title = resolvedTitle
+                artist = resolvedAuthor
+            }
+        }
+
         guard !title.isEmpty else { return nil }
 
         return Track(

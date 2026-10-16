@@ -179,7 +179,8 @@ public struct DesktopHUDView: View {
                     }
                 }
             } else {
-                Text("Waiting for lyrics & chords...")
+                let placeholder = (track != nil) ? "🎵 \(track?.artist ?? "") - \(track?.title ?? "") (Intro)" : "Listening for media..."
+                Text(placeholder)
                     .font(.system(size: 13, weight: .regular))
                     .foregroundColor(.gray)
             }
