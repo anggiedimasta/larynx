@@ -100,64 +100,35 @@ public final class PlaybackEngine: @unchecked Sendable {
     }
 
     private func queryBrowser(_ browser: (bundleId: String, appName: String, isSafari: Bool)) -> Track? {
-        let scriptText: String
-        let js = #"""
-        (function(){
-            var v = document.querySelector('video');
-            if (!v) return '';
-            var titleEl = document.querySelector('yt-formatted-string.title.style-scope.ytmusic-player-bar')
-                       || document.querySelector('.title.style-scope.ytmusic-player-bar')
-                       || document.querySelector('ytmusic-player-bar .title')
-                       || document.querySelector('h1.ytd-watch-metadata yt-formatted-string')
-                       || document.querySelector('#info-contents h1 yt-formatted-string');
-            var artistEl = document.querySelector('yt-formatted-string.byline.style-scope.ytmusic-player-bar a')
-                        || document.querySelector('.byline.style-scope.ytmusic-player-bar a')
-                        || document.querySelector('ytmusic-player-bar .byline a')
-                        || document.querySelector('#owner #channel-name a')
-                        || document.querySelector('ytd-channel-name a');
-            var title = titleEl ? titleEl.textContent.trim() : '';
-            var artist = artistEl ? artistEl.textContent.trim() : '';
-            if (!title && document.title) {
-                var dt = document.title.replace(/ - YouTube Music$/, '').replace(/ - YouTube$/, '');
-                var parts = dt.split(' - ');
-                if (parts.length >= 2) { title = parts[0].trim(); artist = parts.slice(1).join(' - ').trim(); }
-                else { title = dt.trim(); }
-            }
-            if (!title) return '';
-            return title + '|||' + artist + '|||' + (v.currentTime || 0) + '|||' + (v.duration || 0) + '|||' + v.paused;
-        })()
-        """#
-
-        if browser.isSafari {
-            scriptText = """
-            tell application "Safari"
+        let scriptText = browser.isSafari ? """
+        tell application "Safari"
+            try
                 repeat with w in windows
                     repeat with t in tabs of w
-                        if URL of t contains "music.youtube.com" or URL of t contains "youtube.com" then
-                            return (do JavaScript "\(js)" in t)
+                        set u to (URL of t)
+                        if u contains "music.youtube.com" or u contains "youtube.com" then
+                            return (title of t) & "|||" & u
                         end if
                     end repeat
                 end repeat
-            end tell
-            return ""
-            """
-        } else {
-            // Chromium (Dia, Arc, Chrome, Brave, Edge)
-            scriptText = """
-            tell application id "\(browser.bundleId)"
+            end try
+        end tell
+        return ""
+        """ : """
+        tell application id "\(browser.bundleId)"
+            try
                 repeat with w in windows
-                    try
-                        repeat with t in tabs of w
-                            if URL of t contains "music.youtube.com" or URL of t contains "youtube.com" then
-                                return (execute t javascript "\(js)")
-                            end if
-                        end repeat
-                    end try
+                    repeat with t in tabs of w
+                        set u to (URL of t)
+                        if u contains "music.youtube.com" or u contains "youtube.com" then
+                            return (title of t) & "|||" & u
+                        end if
+                    end repeat
                 end repeat
-            end tell
-            return ""
-            """
-        }
+            end try
+        end tell
+        return ""
+        """
 
         guard let script = NSAppleScript(source: scriptText) else { return nil }
         var errorDict: NSDictionary?
@@ -167,69 +138,30 @@ public final class PlaybackEngine: @unchecked Sendable {
         }
 
         let parts = stringValue.components(separatedBy: "|||")
-        guard parts.count >= 5 else { return nil }
+        guard let rawTitle = parts.first, !rawTitle.isEmpty else { return nil }
 
-        let title = parts[0]
-        let artist = parts[1].isEmpty ? "Unknown Artist" : parts[1]
-        let current = Double(parts[2]) ?? 0
-        let duration = Double(parts[3]) ?? 0
-        let isPaused = (parts[4] == "true")
+        let cleaned = rawTitle
+            .replacingOccurrences(of: " - YouTube Music", with: "")
+            .replacingOccurrences(of: " - YouTube", with: "")
+        let subParts = cleaned.components(separatedBy: " - ")
+
+        let title = subParts[0].trimmingCharacters(in: .whitespaces)
+        let artist = subParts.count > 1 ? subParts[1].trimmingCharacters(in: .whitespaces) : "YouTube Music"
+        guard !title.isEmpty else { return nil }
 
         return Track(
             title: title,
             artist: artist,
-            duration: duration,
-            elapsedTime: current,
-            isPaused: isPaused,
+            duration: 0,
+            elapsedTime: 0,
+            isPaused: false,
             source: browser.appName
         )
     }
 
     public func togglePlayPause() {
-        queue.async {
-            autoreleasepool {
-                // If a browser is running media, toggle video inside THAT running browser
-                for browser in self.targetBrowsers {
-                    let running = NSRunningApplication.runningApplications(withBundleIdentifier: browser.bundleId)
-                    guard !running.isEmpty else { continue }
-
-                    let toggleJS = "(function(){var v=document.querySelector('video');if(v){v.paused?v.play().catch(function(){}):v.pause();}})()"
-                    let scriptText = browser.isSafari ? """
-                    tell application "Safari"
-                        repeat with w in windows
-                            repeat with t in tabs of w
-                                if URL of t contains "music.youtube.com" or URL of t contains "youtube.com" then
-                                    do JavaScript "\(toggleJS)" in t
-                                    return
-                                end if
-                            end repeat
-                        end repeat
-                    end tell
-                    """ : """
-                    tell application id "\(browser.bundleId)"
-                        repeat with w in windows
-                            try
-                                repeat with t in tabs of w
-                                    if URL of t contains "music.youtube.com" or URL of t contains "youtube.com" then
-                                        execute t javascript "\(toggleJS)"
-                                        return
-                                    end if
-                                end repeat
-                            end try
-                        end repeat
-                    end tell
-                    """
-
-                    if let script = NSAppleScript(source: scriptText) {
-                        var err: NSDictionary?
-                        script.executeAndReturnError(&err)
-                    }
-                }
-
-                // Also send hardware media key
-                self.postMediaKey(16) // NX_KEYTYPE_PLAY
-            }
-        }
+        // Global hardware media key - works across all browsers & native players without scripting errors
+        postMediaKey(16) // NX_KEYTYPE_PLAY
     }
 
     private func postMediaKey(_ keyCode: Int32) {
